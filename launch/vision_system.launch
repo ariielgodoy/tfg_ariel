@@ -1,0 +1,6 @@
+<launch>
+    <node name="cone_detector" pkg="tfg_ariel" type="vision_node.py" output="screen">
+        <param name="image_topic" value="/camera/color/image_raw"/> 
+        <param name="conf_threshold" value="0.5"/>
+    </node>
+</launch>
