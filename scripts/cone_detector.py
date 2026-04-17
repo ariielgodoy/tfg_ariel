@@ -61,7 +61,7 @@ class ConeDetector:
 
         #Publicadores y suscriptores de ROS
         self.image_pub = rospy.Publisher("/deteccion_conos", Image, queue_size=1)
-        self.sub = rospy.Subscriber("/camera/color/image_raw", Image, self.callback)
+        self.sub = rospy.Subscriber("/camera/color/image_raw", Image, self.callback, queue_size=1, buff_size=2**24)
         
         rospy.loginfo("Motor cargado con Bounding Boxes activas.")
 
@@ -75,7 +75,7 @@ class ConeDetector:
         except Exception as e:
             rospy.logerr(f"Error al limpiar la memoria: {e}")
 
-    def allocate_buffers():
+    def allocate_buffers(self):
         inputs, outputs, bindings = [], [], []
         stream = cuda.Stream()
         for binding in self.engine:
@@ -213,8 +213,9 @@ class ConeDetector:
             out_msg.header = msg.header
             out_msg.height = frame.shape[0]
             out_msg.width = frame.shape[1]
+            out_msg.encoding = "bgr8"
             out_msg.step = frame.shape[1] * 3
-            out_msg.data = fram.tobytes()
+            out_msg.data = frame.tobytes()
             self.image_pub.publish(out_msg)
 
         finally:
@@ -224,9 +225,9 @@ class ConeDetector:
 if __name__=='__main__':
     PATH_ENGINE = "/home/tx2/Development/racecar-ws/src/tfg_ariel/models/best_fp16.engine"
     try:
-        ConeDetector(PATH_ENGINE, conf_threshold=0.45, iou_threshold = 0.3)
+        ConeDetector(PATH_ENGINE, conf_threshold=0.25, iou_threshold = 0.3)
         rospy.spin()
     except Exception as e:
-        rospy.logger(f"Error: {e}")
+        rospy.loger(f"Error: {e}")
 
 
