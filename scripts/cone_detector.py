@@ -15,7 +15,11 @@ import numpy as np
 import tensorrt as trt
 import pycuda.driver as cuda
 import pycuda.autoinit
-from sensor_msgs.msg import Image
+from sensor_msgs.msg import Image, CameraInfo
+
+from geometry_msgs.msg import PointStamped
+import image_geometry
+import tf
 
 
 class ConeDetector:
@@ -61,7 +65,9 @@ class ConeDetector:
 
         #Publicadores y suscriptores de ROS
         self.image_pub = rospy.Publisher("/deteccion_conos", Image, queue_size=1)
-        self.sub = rospy.Subscriber("/camera/color/image_raw", Image, self.callback, queue_size=1, buff_size=2**24)
+        self.sub = rospy.Subscriber("/camera/color/image_raw", Image, self.callback_yolo, queue_size=1, buff_size=2**24)
+
+        self.mask_yolo_depth = rospy.Subscriber("/camera/depth/image_rect_raw", Image, self.callback_depth, queue_size=1, buff_size=2**24)
         
         rospy.loginfo("Motor cargado con Bounding Boxes activas.")
 
@@ -144,7 +150,7 @@ class ConeDetector:
         return boxes.astype(int), valid_scores, [0]*len(valid_scores), indices
 
     
-    def callback(self, msg):
+    def callback_yolo(self, msg):
         self.cfx.push()
         """Tomar el control de la GPU"""
         try:
@@ -222,8 +228,66 @@ class ConeDetector:
             self.cfx.pop()
 
 
+    def transform_into_global_coordinates(self, relative_cone_position):
+        p = PointStamped()
+        p.header.frame_id = "camera_link_optical"
+        p.header.stamp = rospy.Time(0)
+        p.point.x = relative_cone_position[0]
+        p.point.y = relative_cone_position[1]
+        p.point.z = relative_cone_position[2]
+
+        #try:
+        p_global = self.listener.transformPoint("map", p)
+        print("Coordenada global del cono: ", p_global)
+        return p_global.point.x, p_global.point.y
+
+    def retrieve_camera_info(self, camera_info):
+        self.camera_model.fromCameraInfo(camera_info)
+        self.intrinsic_params = True
+
+        self.camera_info_sub.unregister()
+
+    def transform_into_relative_coordinates(self, u1, v1, u2, v2, distance_to_cone):
+        u = (u1 + u2) / 2
+        v = (v1 + v2) / 2
+        cone_center_transformation_vector = self.camera_model.projectPixelTo3dRay((u, v))
+        x_real = cone_center_transformation_vector[0]*distance_to_cone
+        y_real = cone_center_transformation_vector[1]*distance_to_cone
+        z_real = distance_to_cone
+        #Falta comprobar este programa, esto da las coordenadas relativas al robot
+        return x_real, y_real, z_real
+
+
+    def callback_depth(self, depth_msg):
+        if len(self.current_boxes) == 0:
+            return
+
+        depth_data = np.frombuffer(depth_msg.data, dtype=np.uint16).reshape(depth_msg.height, depth_msg.width)
+
+        depth_data = depth_data.astype(float)/1000.0
+
+        for bbox in self.current_boxes:
+            x1, y1, w, h = map(int, bbox)
+            x2, y2 = x1 + w, y1 + h
+            roi = depth_data[y1:y2, x1:x2]
+
+            mask = depth_data[y1:y2, x1:x2]
+
+            mask = np.isfinite(roi) & (roi > 0.5) & (roi < 3.0)
+
+            valid_points = roi[mask]
+            
+            if valid_points.size > 0:
+                distance_to_cone = np.median(valid_points)
+
+                relative_cone_position = self.transform_into_relative_coordinates(x1, y1, x2, y2, distance_to_cone)
+                gobal_cone_position = self.transform_into_global_coordinates(relative_cone_position)
+            else:
+                pass
+
+
 if __name__=='__main__':
-    PATH_ENGINE = "/home/tx2/Development/racecar-ws/src/tfg_ariel/models/best_fp16.engine"
+    PATH_ENGINE = "/home/tx2/Development/racecar-ws/src/tfg_ariel/models/best.engine"
     try:
         ConeDetector(PATH_ENGINE, conf_threshold=0.25, iou_threshold = 0.3)
         rospy.spin()
