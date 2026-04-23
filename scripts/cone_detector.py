@@ -26,6 +26,7 @@ class ConeDetector:
     def __init__(self, engine_path, conf_threshold=0.5, iou_threshold=0.3):
         rospy.init_node("cones_position_node")
 
+        #Inference
         self.conf_threshold = conf_threshold
         self.iou_threshold = iou_threshold
 
@@ -63,12 +64,23 @@ class ConeDetector:
         self.stream = permite ejecutar operaciones en paralelo. cpy cpu-><-gpu, ejecutar modelo"""
 
 
+        #Camera
+        self.camera_model = image_geometry.PinholeCameraModel()
+        self.listener = tf.TransformListener()
+        self.current_boxes = []
+        self.intrinsic_params = None
+
+
         #Publicadores y suscriptores de ROS
         self.image_pub = rospy.Publisher("/deteccion_conos", Image, queue_size=1)
         self.sub = rospy.Subscriber("/camera/color/image_raw", Image, self.callback_yolo, queue_size=1, buff_size=2**24)
 
         self.mask_yolo_depth = rospy.Subscriber("/camera/depth/image_rect_raw", Image, self.callback_depth, queue_size=1, buff_size=2**24)
-        
+
+        self.camera_info_sub = rospy.Subscriber("/camera/depth/camera_info", CameraInfo, self.retrieve_camera_info)
+
+
+
         rospy.loginfo("Motor cargado con Bounding Boxes activas.")
 
 
@@ -207,6 +219,7 @@ class ConeDetector:
             boxes, confs, ids, indices = self.postprocess(self.outputs, (msg.width, msg.height))
 
             if len(indices)>0:
+                self.current_boxes = boxes[indices.flatten()] # Guardar para el callback de depth
                 for i in indices.flatten():
                     x, y, w, h = boxes[i]
                     conf = confs[i]
@@ -271,8 +284,6 @@ class ConeDetector:
             x2, y2 = x1 + w, y1 + h
             roi = depth_data[y1:y2, x1:x2]
 
-            mask = depth_data[y1:y2, x1:x2]
-
             mask = np.isfinite(roi) & (roi > 0.5) & (roi < 3.0)
 
             valid_points = roi[mask]
@@ -292,6 +303,6 @@ if __name__=='__main__':
         ConeDetector(PATH_ENGINE, conf_threshold=0.25, iou_threshold = 0.3)
         rospy.spin()
     except Exception as e:
-        rospy.loger(f"Error: {e}")
+        rospy.logerr(f"Error: {e}")
 
 
