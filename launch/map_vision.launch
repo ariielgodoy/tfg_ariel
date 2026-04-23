@@ -1,0 +1,12 @@
+<launch>
+    <rosparam command="load" file="$(find racecar)/config/racecar-v2/vesc.yaml" />
+
+    <include file="$(find vesc_ackermann)/launch/vesc_to_odom_node.launch"/>
+    <include file="$(find vesc_ackermann)/launch/ackermann_to_vesc_node.launch"/>
+
+    <include file="$(find tfg_ariel)/launch/vision_system.launch"/>
+
+    <node name="cone_detector" pkg="tfg_ariel" type="cone_detector.py" output="screen"/>
+    
+    <node name="cone_mapper" pkg="tfg_ariel" type="cone_mapper.py" output="screen"/>
+</launch>

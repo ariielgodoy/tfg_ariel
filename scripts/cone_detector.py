@@ -19,7 +19,6 @@ from sensor_msgs.msg import Image, CameraInfo
 
 from geometry_msgs.msg import PointStamped
 import image_geometry
-import tf
 
 
 class ConeDetector:
@@ -66,13 +65,14 @@ class ConeDetector:
 
         #Camera
         self.camera_model = image_geometry.PinholeCameraModel()
-        self.listener = tf.TransformListener()
         self.current_boxes = []
         self.intrinsic_params = None
 
 
         #Publicadores y suscriptores de ROS
-        self.image_pub = rospy.Publisher("/deteccion_conos", Image, queue_size=1)
+        self.image_pub = rospy.Publisher("/yolo/deteccion_conos", Image, queue_size=1)
+        self.relative_poses_pub = rospy.Publisher("cones/relative_poses", PointStamped, queue_size=10)
+
         self.sub = rospy.Subscriber("/camera/color/image_raw", Image, self.callback_yolo, queue_size=1, buff_size=2**24)
 
         self.mask_yolo_depth = rospy.Subscriber("/camera/depth/image_rect_raw", Image, self.callback_depth, queue_size=1, buff_size=2**24)
@@ -241,19 +241,6 @@ class ConeDetector:
             self.cfx.pop()
 
 
-    def transform_into_global_coordinates(self, relative_cone_position):
-        p = PointStamped()
-        p.header.frame_id = "camera_link_optical"
-        p.header.stamp = rospy.Time(0)
-        p.point.x = relative_cone_position[0]
-        p.point.y = relative_cone_position[1]
-        p.point.z = relative_cone_position[2]
-
-        #try:
-        p_global = self.listener.transformPoint("map", p)
-        print("Coordenada global del cono: ", p_global)
-        return p_global.point.x, p_global.point.y
-
     def retrieve_camera_info(self, camera_info):
         self.camera_model.fromCameraInfo(camera_info)
         self.intrinsic_params = True
@@ -291,8 +278,20 @@ class ConeDetector:
             if valid_points.size > 0:
                 distance_to_cone = np.median(valid_points)
 
-                relative_cone_position = self.transform_into_relative_coordinates(x1, y1, x2, y2, distance_to_cone)
-                gobal_cone_position = self.transform_into_global_coordinates(relative_cone_position)
+                x_c, y_c, z_c = self.transform_into_relative_coordinates(x1, y1, x2, y2, distance_to_cone)
+                cono_msg = PointStamped()
+                cono_msg.header.stamp = depth_msg.header.stamp
+
+                cono_msg.header.frame_id = "camera_color_optical_frame"
+        
+                # 4. LAS COORDENADAS
+                cono_msg.point.x = x_c
+                cono_msg.point.y = y_c
+                cono_msg.point.z = z_c
+                
+                # 5. ¡A VOLAR!
+                self.relative_poses_pub.publish(cono_msg)
+
             else:
                 pass
 
