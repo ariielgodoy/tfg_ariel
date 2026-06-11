@@ -17,12 +17,12 @@ import pycuda.driver as cuda
 import pycuda.autoinit
 from sensor_msgs.msg import Image, CameraInfo
 
-from geometry_msgs.msg import PointStamped
+from geometry_msgs.msg import PoseStamped, PoseArray, Pose
 import image_geometry
 
 
 class ConeDetector:
-    def __init__(self, engine_path, conf_threshold=0.5, iou_threshold=0.3):
+    def __init__(self, engine_path, conf_threshold=0.6, iou_threshold=0.7):
         rospy.init_node("cones_position_node")
 
         #Inference
@@ -71,15 +71,16 @@ class ConeDetector:
 
         #Publicadores y suscriptores de ROS
         self.image_pub = rospy.Publisher("/yolo/deteccion_conos", Image, queue_size=1)
-        self.relative_poses_pub = rospy.Publisher("cones/relative_poses", PointStamped, queue_size=10)
+        self.relative_poses_pub = rospy.Publisher("cones/relative_poses", PoseArray, queue_size=10)
 
         self.sub = rospy.Subscriber("/camera/color/image_raw", Image, self.callback_yolo, queue_size=1, buff_size=2**24)
 
-        self.mask_yolo_depth = rospy.Subscriber("/camera/depth/image_rect_raw", Image, self.callback_depth, queue_size=1, buff_size=2**24)
+        self.mask_yolo_depth = rospy.Subscriber("/camera/aligned_depth_to_color/image_raw", Image, self.callback_depth, queue_size=1, buff_size=2**24)
 
-        self.camera_info_sub = rospy.Subscriber("/camera/depth/camera_info", CameraInfo, self.retrieve_camera_info)
+        self.camera_info_sub = rospy.Subscriber("/camera/color/camera_info", CameraInfo, self.retrieve_camera_info)
 
-
+        #DEBUGGING
+        self.debug_pub = rospy.Publisher('/vision/yolo_debug', Image, queue_size=1)
 
         rospy.loginfo("Motor cargado con Bounding Boxes activas.")
 
@@ -218,15 +219,45 @@ class ConeDetector:
 
             boxes, confs, ids, indices = self.postprocess(self.outputs, (msg.width, msg.height))
 
-            if len(indices)>0:
-                self.current_boxes = boxes[indices.flatten()] # Guardar para el callback de depth
-                for i in indices.flatten():
-                    x, y, w, h = boxes[i]
-                    conf = confs[i]
-                    cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+            # Definimos los límites
+            margin = 30
+            img_width = msg.width  # Usamos las dimensiones que ya tienes
+            img_height = msg.height
 
-                    label = f"Cono: {conf:.2f}"
-                    cv2.putText(frame, label, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+            # Dibujamos las líneas de referencia (fuera del bucle para no sobreescribir)
+            cv2.line(frame, (margin, 0), (margin, img_height), (0, 0, 255), 2)
+            cv2.line(frame, (img_width - margin, 0), (img_width - margin, img_height), (0, 0, 255), 2)
+
+            if len(indices) > 0:
+                indices_flattened = indices.flatten()
+                
+                # Preparamos una lista para los conos válidos
+                valid_boxes = []
+                
+                for i in indices_flattened:
+                    x, y, w, h = boxes[i]
+                    center_x = x + (w / 2) # Calculamos el centro horizontal del cono
+                    
+                    # FILTRO: Solo procesamos si está dentro del margen
+                    if margin < center_x < (img_width - margin):
+                        # Guardamos para el callback (o procesamos)
+                        valid_boxes.append(i) 
+                        
+                        # Dibujamos solo los que son fiables
+                        conf = confs[i]
+                        cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+                        label = "Cono: {:.2f}".format(conf)
+                        cv2.putText(frame, label, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+                    else:
+                        # Opcional: imprimir en consola para depurar
+                        # rospy.logdebug("Cono ignorado por estar cerca del borde")
+                        pass
+                        
+                # Actualizamos current_boxes solo con los índices válidos
+                if len(valid_boxes) > 0:
+                    self.current_boxes = boxes[valid_boxes]
+                else:
+                    self.current_boxes = []
 
             out_msg = Image()
             out_msg.header = msg.header
@@ -247,21 +278,68 @@ class ConeDetector:
 
         self.camera_info_sub.unregister()
 
-    def transform_into_relative_coordinates(self, u1, v1, u2, v2, distance_to_cone):
+    def transform_into_relative_coordinates(self, u1, v1, u2, v2, distance_to_cone, depth_msg:Image):
         u = (u1 + u2) / 2
         v = (v1 + v2) / 2
         cone_center_transformation_vector = self.camera_model.projectPixelTo3dRay((u, v))
-        x_real = cone_center_transformation_vector[0]*distance_to_cone
-        y_real = cone_center_transformation_vector[1]*distance_to_cone
+        x_real = (cone_center_transformation_vector[0]/cone_center_transformation_vector[2])*distance_to_cone
+        y_real = (cone_center_transformation_vector[1]/cone_center_transformation_vector[2])*distance_to_cone
         z_real = distance_to_cone
         #Falta comprobar este programa, esto da las coordenadas relativas al robot
+        # --- BLOQUE DE DEBUG VISUAL ---
+        try:
+            # 1. Extraer los datos crudos (uint16, en milímetros)
+            depth_array = np.frombuffer(depth_msg.data, dtype=np.uint16).reshape(depth_msg.height, depth_msg.width)
+            
+            # 2. Escalar a 8 bits para que se pueda ver en pantalla
+            # Clip a 5000mm (5 metros) para que los conos destaquen sobre el fondo
+            depth_8bit = np.clip((depth_array / 5000.0) * 255.0, 0, 255).astype(np.uint8)
+            
+            # 3. Pasar de 1 canal (escala de grises) a 3 canales (BGR) para dibujar a color
+            cv_image = cv2.cvtColor(depth_8bit, cv2.COLOR_GRAY2BGR)
+            
+            # Aseguramos que las coordenadas de la caja y del centro son enteros
+            u1, v1, u2, v2 = int(u1), int(v1), int(u2), int(v2)
+            u, v = int((u1 + u2) / 2), int((v1 + v2) / 2)
+            
+            # Dibujar el Bounding Box (Verde)
+            cv2.rectangle(cv_image, (u1, v1), (u2, v2), (0, 255, 0), 2)
+            
+            # Dibujar la etiqueta con la distancia calculada en metros (Texto rojo)
+            label = "Z: {:.2f}m".format(z_real)
+            cv2.putText(cv_image, label, (u1, v1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+            
+            # Dibujar el centro exacto desde el que lanzas el rayo (Punto rojo)
+            cv2.circle(cv_image, (u, v), 5, (0, 0, 255), -1)
+
+            # 4. Empaquetar y construir el mensaje de ROS a mano (sin cv_bridge)
+            out_msg = Image()
+            out_msg.header = depth_msg.header
+            out_msg.height = cv_image.shape[0]
+            out_msg.width = cv_image.shape[1]
+            out_msg.encoding = "bgr8"
+            out_msg.step = cv_image.shape[1] * 3
+            out_msg.data = cv_image.tobytes()
+            
+            # Publicar la imagen
+            # (Requiere self.debug_pub = rospy.Publisher('/vision/yolo_debug', Image, queue_size=1))
+            self.debug_pub.publish(out_msg)
+            
+        except Exception as e:
+            rospy.logerr_throttle(1, "Fallo al pintar debug visual: %s", str(e))
+
         return x_real, y_real, z_real
 
 
-    def callback_depth(self, depth_msg):
+    def callback_depth(self, depth_msg:Image):
         if len(self.current_boxes) == 0:
             return
 
+        relative_pose_array = PoseArray()
+
+        relative_pose_array.header.frame_id = "camera_color_optical_frame"
+        relative_pose_array.header.stamp = depth_msg.header.stamp
+        
         depth_data = np.frombuffer(depth_msg.data, dtype=np.uint16).reshape(depth_msg.height, depth_msg.width)
 
         depth_data = depth_data.astype(float)/1000.0
@@ -276,24 +354,21 @@ class ConeDetector:
             valid_points = roi[mask]
             
             if valid_points.size > 0:
-                distance_to_cone = np.median(valid_points)
+                distance_to_cone = np.percentile(valid_points, 40)
 
-                x_c, y_c, z_c = self.transform_into_relative_coordinates(x1, y1, x2, y2, distance_to_cone)
-                cono_msg = PointStamped()
-                cono_msg.header.stamp = depth_msg.header.stamp
-
-                cono_msg.header.frame_id = "camera_color_optical_frame"
+                x_c, y_c, z_c = self.transform_into_relative_coordinates(x1, y1, x2, y2, distance_to_cone, depth_msg)
+                cono_msg = Pose()
         
                 # 4. LAS COORDENADAS
-                cono_msg.point.x = x_c
-                cono_msg.point.y = y_c
-                cono_msg.point.z = z_c
+                cono_msg.position.x = x_c
+                cono_msg.position.y = y_c
+                cono_msg.position.z = z_c
+                cono_msg.orientation.w = 1.0
                 
-                # 5. ¡A VOLAR!
-                self.relative_poses_pub.publish(cono_msg)
+                relative_pose_array.poses.append(cono_msg)
 
-            else:
-                pass
+        self.relative_poses_pub.publish(relative_pose_array)
+
 
 
 if __name__=='__main__':

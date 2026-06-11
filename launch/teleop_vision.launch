@@ -1,0 +1,21 @@
+<?xml version="1.0"?>
+<launch>
+    <!-- 1. Bringup completo del coche real (Teleoperación con mando, drivers VESC, MUX) -->
+    <!-- Este launch ya incluye internamente el vesc_to_odom, ackermann_to_vesc y carga el vesc.yaml -->
+    <include file="$(find racecar)/launch/teleop.launch"/>
+
+    <!-- 2. Sistema de visión (probablemente los drivers de la cámara) -->
+    <include file="$(find tfg_ariel)/launch/vision_system.launch"/>
+
+    <!-- 3. Nodos de procesamiento de la visión y mapeo -->
+    <node name="cone_detector" 
+      pkg="tfg_ariel" 
+      type="cone_detector.py" 
+      output="screen" 
+      launch-prefix="/usr/bin/python3"/>
+    <node name="cone_mapper" pkg="tfg_ariel" type="visual_mapper.py" output="screen"/>
+
+    <!-- 4. SLAM para corregir la odometría con el LiDAR -->
+    <node name="pure_pursuit" pkg="tfg_ariel" type="pure_pursuit_reactivo.py" output="screen"/>
+
+</launch>

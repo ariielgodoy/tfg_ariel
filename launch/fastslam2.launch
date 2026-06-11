@@ -1,0 +1,15 @@
+<?xml version="1.0"?>
+<launch>
+    <!-- 1. Bringup del coche (teleop, VESC drivers, odom) -->
+    <include file="$(find racecar)/launch/teleop.launch"/>
+
+    <!-- 2. Cámara RealSense + robot_state_publisher + TFs -->
+    <include file="$(find tfg_ariel)/launch/vision_system.launch"/>
+
+    <!-- 3. Detección de conos con YOLO (publica en cones/relative_poses) -->
+    <node name="cone_detector" pkg="tfg_ariel" type="cone_detector.py" output="screen"/>
+
+    <!-- 4. FastSLAM 2.0 (consume cones/relative_poses + odometría) -->
+    <node name="fast_slam2" pkg="tfg_ariel" type="fast_slam2.py" output="screen"/>
+
+</launch>
