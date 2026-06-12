@@ -15,7 +15,7 @@ class PurePursuitReactivo:
     def __init__(self):
         self.L   = 0.325 #m Distancia entre ejes (Batalla del coche)
         self.Lt  = 0.5 #m Distancia de mirada (Lookahead distance)
-        self.MAX_STEER = 1.0 # (En radianes) Ángulo máximo de giro físico de las ruedas
+        self.MAX_STEER = 3.14/2 # (En radianes) Ángulo máximo de giro físico de las ruedas
 
         self.current_speed = 0.0
         self.current_angle = 0.0
